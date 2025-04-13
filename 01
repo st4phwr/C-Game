@@ -1,0 +1,233 @@
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+#include <thread>
+
+#idef _WIN32
+#include<windows.h>
+#else
+#include<unistd.h>
+#endif
+
+//Configuration
+const int BOARD_WIDTH = 10;
+const int BOARD_HEIGHT = 20;
+const int BLOCK_SIZE = 2; //For console representation(each block is 2x1 character)
+const float FALL_SPEED = 0.5f; //seconds per row
+
+//Tetromino shapes(represented as relative coordinates from a pivot)
+const std::vector<std::vector<strd::pair<int, int>>> TETROMINOS = {
+    {{0, 0}, {0, -1}, {0, 1}, {0, 2}},     // I
+    {{0, 0}, {-1, 0}, {1, 0}, {1, -1}},    // L
+    {{0, 0}, {-1, 0}, {1, 0}, {-1, -1}},   // J
+    {{0, 0}, {1, 0}, {0, -1}, {1, -1}},    // O
+    {{0, 0}, {-1, 0}, {0, -1}, {1, -1}},   // S
+    {{0, 0}, {-1, 0}, {1, 0}, {0, -1}},    // T
+    {{0, 0}, {-1, -1}, {0, -1}, {1, 0}}     // Z
+};
+
+// Colors for console output (optional, might not work on all terminals)
+const std::vector<const char*> COLORS = {" ", "\033[31m██\033[0m", "\033[32m██\033[0m", "\033[33m██\033[0m", "\033[34m██\033[0m", "\033[35m██\033[0m", "\033[36m██\033[0m", "\033[37m██\033[0m"};
+enum { EMPTY = 0, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE }; // Color indices
+
+// Game state
+std::vector<std::vector<int>> board(BOARD_HEIGHT, std::vector<int>(BOARD_WIDTH, EMPTY));
+int currentTetrominoIndex;
+std::vector<std::pair<int, int>> currentTetrominoPosition;
+int currentRotation = 0;
+double fallTimer = 0.0;
+int score = 0;
+bool gameOver = false;
+
+// Function to clear the console
+void clearScreen() {
+#ifdef _WIN32
+    system("cls");
+#else
+    system("clear");
+#endif
+}
+
+// Function to draw the board
+void drawBoard() {
+    for (int y = 0; y < BOARD_HEIGHT; ++y) {
+        std::cout << "|";
+        for (int x = 0; x < BOARD_WIDTH; ++x) {
+            std::cout << COLORS[board[y][x]];
+        }
+        std::cout << "|" << std::endl;
+    }
+    std::cout << "+";
+    for (int i = 0; i < BOARD_WIDTH * BLOCK_SIZE; ++i) {
+        std::cout << "-";
+    }
+    std::cout << "+" << std::endl;
+    std::cout << "Score: " << score << std::endl;
+}
+
+// Function to get the current tetromino shape based on index and rotation
+std::vector<std::pair<int, int>> getCurrentShape() {
+    std::vector<std::pair<int, int>> shape = TETROMINOS[currentTetrominoIndex];
+    std::vector<std::pair<int, int>> rotatedShape = shape;
+
+    for (int r = 0; r < currentRotation; ++r) {
+        for (auto& p : rotatedShape) {
+            int temp = p.first;
+            p.first = -p.second;
+            p.second = temp;
+        }
+    }
+    return rotatedShape;
+}
+
+// Function to check if a tetromino's new position is valid
+bool isPositionValid(const std::vector<std::pair<int, int>>& shape, int offsetX, int offsetY) {
+    for (const auto& block : shape) {
+        int x = currentTetrominoPosition[0].first + block.first + offsetX;
+        int y = currentTetrominoPosition[0].second + block.second + offsetY;
+
+        if (x < 0 || x >= BOARD_WIDTH || y >= BOARD_HEIGHT || (y >= 0 && board[y][x] != EMPTY)) {
+            return false;
+        }
+        if (y < 0 && (x >= 0 && x < BOARD_WIDTH)) continue; // Allow spawning above the board
+    }
+    return true;
+}
+
+// Function to place the current tetromino on the board
+void placeTetromino() {
+    std::vector<std::pair<int, int>> shape = getCurrentShape();
+    int color = currentTetrominoIndex + 1; // Assign a color based on the tetromino index
+    for (const auto& block : shape) {
+        int x = currentTetrominoPosition[0].first + block.first;
+        int y = currentTetrominoPosition[0].second + block.second;
+        if (y >= 0) {
+            board[y][x] = color;
+        }
+    }
+}
+
+// Function to generate a new tetromino
+void spawnTetromino() {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> distrib(0, TETROMINOS.size() - 1);
+    currentTetrominoIndex = distrib(gen);
+    currentRotation = 0;
+    currentTetrominoPosition = {{BOARD_WIDTH / 2 - 1, -2}}; // Start slightly above the board
+
+    if (!isPositionValid(getCurrentShape(), 0, 0)) {
+        gameOver = true;
+    }
+}
+
+// Function to move the current tetromino
+void moveTetromino(int offsetX, int offsetY) {
+    std::vector<std::pair<int, int>> shape = getCurrentShape();
+    if (isPositionValid(shape, offsetX, offsetY)) {
+        currentTetrominoPosition[0].first += offsetX;
+        currentTetrominoPosition[0].second += offsetY;
+    } else if (offsetY == 1) {
+        placeTetromino();
+        spawnTetromino();
+        clearFilledLines();
+    }
+}
+
+// Function to rotate the current tetromino
+void rotateTetromino(int direction) { // 1 for clockwise, -1 for counter-clockwise
+    int previousRotation = currentRotation;
+    currentRotation = (currentRotation + direction + 4) % 4; // Ensure it stays within 0-3
+
+    std::vector<std::pair<int, int>> shape = getCurrentShape();
+    if (!isPositionValid(shape, 0, 0)) {
+        // Try wall kicks (simple horizontal adjustments)
+        if (isPositionValid(shape, 1, 0)) {
+            currentTetrominoPosition[0].first += 1;
+        } else if (isPositionValid(shape, -1, 0)) {
+            currentTetrominoPosition[0].first -= 1;
+        } else if (isPositionValid(shape, 0, -1)) {
+            currentTetrominoPosition[0].second -= 1;
+        } else {
+            currentRotation = previousRotation; // Revert rotation if no valid position
+        }
+    }
+}
+
+// Function to clear filled lines
+void clearFilledLines() {
+    int linesCleared = 0;
+    for (int y = BOARD_HEIGHT - 1; y >= 0; --y) {
+        bool filled = true;
+        for (int x = 0; x < BOARD_WIDTH; ++x) {
+            if (board[y][x] == EMPTY) {
+                filled = false;
+                break;
+            }
+        }
+        if (filled) {
+            linesCleared++;
+            // Shift down all rows above the cleared line
+            for (int i = y; i > 0; --i) {
+                board[i] = board[i - 1];
+            }
+            board[0].assign(BOARD_WIDTH, EMPTY); // Top row becomes empty
+            y++; // Re-check the current row (as it's now a new row)
+        }
+    }
+
+    switch (linesCleared) {
+        case 1: score += 100; break;
+        case 2: score += 300; break;
+        case 3: score += 500; break;
+        case 4: score += 800; break;
+    }
+}
+
+int main() {
+    spawnTetromino();
+
+    auto lastTime = std::chrono::high_resolution_clock::now();
+
+    while (!gameOver) {
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        double deltaTime = std::chrono::duration<double, std::milli>(currentTime - lastTime).count() / 1000.0;
+        lastTime = currentTime;
+
+        fallTimer += deltaTime;
+        if (fallTimer >= FALL_SPEED) {
+            moveTetromino(0, 1);
+            fallTimer -= FALL_SPEED;
+        }
+
+        // Handle user input (non-blocking on console is tricky, so this is a basic example)
+        // In a proper game, you'd use a library for event handling.
+        char input = ' ';
+        if (_kbhit()) { // Check if a key is pressed (Windows-specific)
+            input = _getch(); // Get the pressed key (Windows-specific)
+            switch (input) {
+                case 'a': moveTetromino(-1, 0); break;
+                case 'd': moveTetromino(1, 0); break;
+                case 's': moveTetromino(0, 1); break;
+                case 'q': rotateTetromino(-1); break; // Counter-clockwise
+                case 'e': rotateTetromino(1); break;  // Clockwise
+            }
+        }
+
+        clearScreen();
+        drawBoard();
+
+        if (gameOver) {
+            std::cout << "Game Over! Final Score: " << score << std::endl;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Small delay for smoother loop
+    }
+
+    return 0;
+}
+
+#ifdef _WIN32
+#include <conio.h> // For _kbhit and _getch
+#endif
